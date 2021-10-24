@@ -1,0 +1,10 @@
+.gradle/
+.idea/
+build/
+.classpath
+.project
+.settings/
+.vscode/
+terraform/.terraform/
+terraform/.terraform*
+terraform/terraform*
