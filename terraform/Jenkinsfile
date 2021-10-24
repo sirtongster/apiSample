@@ -1,0 +1,70 @@
+def STACK_NAME
+def PHYSICAL_RESOURCE_ID
+
+pipeline {
+  agent any
+  stages {
+    stage('Install Dependencies') {
+      steps {
+        sh 'echo "************* TERRAFORM INSTALLATION *************"'
+        sh 'wget -O /tmp/terraform_1.0.9_linux_arm64.zip https://releases.hashicorp.com/terraform/1.0.9/terraform_1.0.9_linux_arm64.zip'
+        sh 'unzip -o /tmp/terraform_1.0.9_linux_arm64.zip -d /tmp'
+        sh 'mv /tmp/terraform /usr/local/bin'
+        sh 'echo "************* AWS CLI INSTALLATION *************"'
+        sh 'wget "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -O "/tmp/awscliv2.zip"'
+        sh 'unzip -o /tmp/awscliv2.zip'
+        sh './aws/install --update'
+        sh 'echo "************* EKSCTL INSTALLATION *************"'
+        sh 'curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp'
+        sh 'mv /tmp/eksctl /usr/local/bin'
+        sh 'echo "************* JQ INSTALLATION *************"'
+        sh 'wget https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64 -O /tmp/jq'
+        sh 'chmod +x /tmp/jq'
+        sh 'mv /tmp/jq /usr/local/bin/jq'
+        sh 'echo "************* KUBECTL INSTALLATION *************"'
+        sh 'curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"'
+        sh 'install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl'
+      }
+    }
+    stage('Infrastructure - Terraform') {
+      steps {
+        withCredentials([aws(accessKeyVariable:'AWS_ACCESS_KEY_ID', credentialsId: 'amazon', secretKeyVariable:'AWS_SECRET_ACCESS_KEY')]){
+          sh '''
+            cd terraform
+            terraform init
+            terraform plan
+            terraform apply --auto-approve
+          '''
+        }
+      }
+    }
+    stage('Infrastructure - EKS') {
+      steps {
+        script {
+          withCredentials([aws(accessKeyVariable:'AWS_ACCESS_KEY_ID', credentialsId: 'amazon', secretKeyVariable:'AWS_SECRET_ACCESS_KEY')]){
+            sh 'aws eks --region us-east-1 update-kubeconfig --name gyf-uala-test-dev-cluster'
+            sh 'eksctl create iamserviceaccount \
+              --cluster=gyf-uala-test-dev-cluster \
+              --namespace=kube-system \
+              --name=aws-load-balancer-controller \
+              --attach-policy-arn=arn:aws:iam::501853673872:policy/AWSLoadBalancerControllerIAMPolicy \
+              --override-existing-serviceaccounts \
+              --approve'
+
+            STACK_NAME = sh([ script: "aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE | jq '.StackSummaries[0].StackName' | sed 's/\"//g'", returnStdout: true ]).trim()
+            PHYSICAL_RESOURCE_ID = sh([ script: "aws cloudformation describe-stack-resources --stack-name ${STACK_NAME} | jq '.StackResources[0].PhysicalResourceId' | sed 's/\"//g'", returnStdout: true ]).trim()
+
+            sh "aws iam attach-role-policy \
+              --role-name ${PHYSICAL_RESOURCE_ID} \
+              --policy-arn arn:aws:iam::501853673872:policy/AWSLoadBalancerControllerAdditionalIAMPolicy"
+            sh 'kubectl apply \
+              --validate=false \
+              -f https://github.com/jetstack/cert-manager/releases/download/v1.5.4/cert-manager.yaml'
+            sh 'kubectl apply -f ./helm/adidas-challenge/files/v2_2_1_full.yaml'
+          }
+        }
+      }
+    }
+    // TODO: Alert Management Notifications
+  }
+}
