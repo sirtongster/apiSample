@@ -19,7 +19,7 @@ variable "eks_version" {
 }
 
 variable "region" {
-  type = string
+  type    = string
   default = "us-east-1"
 }
 
